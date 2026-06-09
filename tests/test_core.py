@@ -65,6 +65,30 @@ def test_cem_matching(lalonde_data):
     m.fit('treat ~ age + educ + re74')
     assert len(m.matched_data) > 0
 
+def test_cem_default_uses_sturges_rule(lalonde_data):
+    # CEM should default to Sturges' rule (ceil(log2(n) + 1)) for continuous
+    # covariates, matching R's `cem` package and producing meaningfully more
+    # strata than a fixed 5-bin default.
+    n = len(lalonde_data)
+    sturges = int(np.ceil(np.log2(n) + 1))
+
+    m_default = MatchIt(lalonde_data, method='cem')
+    m_default.fit('treat ~ age + educ + re74')
+
+    m_five = MatchIt(lalonde_data, method='cem',
+                     cutpoints={'age': 5, 'educ': 5, 're74': 5})
+    m_five.fit('treat ~ age + educ + re74')
+
+    m_sturges = MatchIt(lalonde_data, method='cem',
+                        cutpoints={'age': sturges, 'educ': sturges, 're74': sturges})
+    m_sturges.fit('treat ~ age + educ + re74')
+
+    # Default behavior should match explicit Sturges, not the old 5-bin default
+    assert m_default.matched_data['subclass'].nunique() == \
+        m_sturges.matched_data['subclass'].nunique()
+    assert m_default.matched_data['subclass'].nunique() > \
+        m_five.matched_data['subclass'].nunique()
+
 def test_subclass_matching(lalonde_data):
     m = MatchIt(lalonde_data, method='subclass', subclass=5)
     m.fit('treat ~ age + educ + race')
