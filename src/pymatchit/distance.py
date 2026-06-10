@@ -10,10 +10,15 @@ from scipy.optimize import minimize
 from typing import Tuple, Optional, Dict, Any, Union
 
 # Scikit-learn imports
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier
+from sklearn.ensemble import (
+    RandomForestClassifier,
+    GradientBoostingClassifier,
+    AdaBoostClassifier,
+)
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.linear_model import LogisticRegression
+
 
 def estimate_distance(
     data: pd.DataFrame,
@@ -21,7 +26,7 @@ def estimate_distance(
     method: str = "glm",
     link: str = "logit",
     distance_options: Optional[Dict[str, Any]] = None,
-    random_state: Optional[int] = None
+    random_state: Optional[int] = None,
 ) -> Tuple[pd.Series, pd.Series]:
     """
     Estimates propensity scores using GLM, CBPS, or Machine Learning methods.
@@ -31,7 +36,7 @@ def estimate_distance(
         formula: R-style formula.
         method: 'glm', 'cbps', 'randomforest', 'decisiontree', 'neuralnet', 'gbm',
                 'adaboost', 'lasso', 'ridge', 'elasticnet'.
-        link: 'logit', 'linear.logit', 'probit' (only for GLM), or 'linear'. 
+        link: 'logit', 'linear.logit', 'probit' (only for GLM), or 'linear'.
               For ML methods, 'logit'/'linear.logit' transforms probabilities to logits.
         distance_options: kwargs passed to the sklearn estimator (e.g. {'n_estimators': 100}).
         random_state: Seed for reproducibility.
@@ -47,9 +52,9 @@ def estimate_distance(
     if method == "glm":
         # Define Family/Link
         family = sm.families.Binomial()
-        if link == 'probit':
+        if link == "probit":
             family = sm.families.Binomial(link=sm.families.links.Probit())
-        elif link in ['logit', 'linear.logit']:
+        elif link in ["logit", "linear.logit"]:
             family = sm.families.Binomial(link=sm.families.links.Logit())
 
         try:
@@ -59,9 +64,9 @@ def estimate_distance(
             raise RuntimeError(f"Failed to fit GLM Propensity Score model: {str(e)}")
 
         propensity_scores = result.fittedvalues
-        
+
         # Calculate Distance Measure
-        if link in ['logit', 'linear.logit', 'probit']:
+        if link in ["logit", "linear.logit", "probit"]:
             distance_measure = result.predict(which="linear")
         else:
             distance_measure = propensity_scores
@@ -77,35 +82,50 @@ def estimate_distance(
         # Prepare Data using Patsy (Handles categorical variables/dummies automatically)
         try:
             # return_type='dataframe' ensures we get pandas Index alignment
-            y, X = patsy.dmatrices(formula, data, return_type='dataframe')
-            y = y.iloc[:, 0] # Flatten target to Series
+            y, X = patsy.dmatrices(formula, data, return_type="dataframe")
+            y = y.iloc[:, 0]  # Flatten target to Series
         except Exception as e:
             raise ValueError(f"Error creating design matrices from formula: {str(e)}")
 
         # Select Model
-        if method == 'randomforest':
-            model = RandomForestClassifier(random_state=random_state, **distance_options)
-        elif method == 'decisiontree':
-            model = DecisionTreeClassifier(random_state=random_state, **distance_options)
-        elif method == 'neuralnet':
+        if method == "randomforest":
+            model = RandomForestClassifier(
+                random_state=random_state, **distance_options
+            )
+        elif method == "decisiontree":
+            model = DecisionTreeClassifier(
+                random_state=random_state, **distance_options
+            )
+        elif method == "neuralnet":
             model = MLPClassifier(random_state=random_state, **distance_options)
-        elif method == 'gbm':
-            model = GradientBoostingClassifier(random_state=random_state, **distance_options)
-        elif method == 'adaboost':
+        elif method == "gbm":
+            model = GradientBoostingClassifier(
+                random_state=random_state, **distance_options
+            )
+        elif method == "adaboost":
             model = AdaBoostClassifier(random_state=random_state, **distance_options)
-        elif method == 'lasso':
+        elif method == "lasso":
             # Lasso is Logistic Regression with L1 penalty
             # Need liblinear or saga for l1
-            opts = {'penalty': 'l1', 'solver': 'liblinear', 'random_state': random_state}
+            opts = {
+                "penalty": "l1",
+                "solver": "liblinear",
+                "random_state": random_state,
+            }
             opts.update(distance_options)
             model = LogisticRegression(**opts)
-        elif method == 'ridge':
+        elif method == "ridge":
             # Ridge is Logistic Regression with L2 penalty
-            opts = {'penalty': 'l2', 'random_state': random_state}
+            opts = {"penalty": "l2", "random_state": random_state}
             opts.update(distance_options)
             model = LogisticRegression(**opts)
-        elif method == 'elasticnet':
-            opts = {'penalty': 'elasticnet', 'solver': 'saga', 'l1_ratio': 0.5, 'random_state': random_state}
+        elif method == "elasticnet":
+            opts = {
+                "penalty": "elasticnet",
+                "solver": "saga",
+                "l1_ratio": 0.5,
+                "random_state": random_state,
+            }
             opts.update(distance_options)
             model = LogisticRegression(**opts)
         else:
@@ -123,7 +143,7 @@ def estimate_distance(
         propensity_scores = pd.Series(scores, index=data.index)
 
         # Calculate Distance Measure (Logit transformation if requested)
-        if link in ['logit', 'linear.logit']:
+        if link in ["logit", "linear.logit"]:
             # Clip probabilities to avoid inf/nan in logit
             eps = 1e-9
             clipped_scores = np.clip(propensity_scores, eps, 1 - eps)
@@ -149,18 +169,18 @@ def _estimate_cbps(
     data: pd.DataFrame,
     formula: str,
     link: str = "logit",
-    random_state: Optional[int] = None
+    random_state: Optional[int] = None,
 ) -> Tuple[pd.Series, pd.Series]:
     """
     Covariate Balancing Propensity Score (CBPS) estimation.
     Jointly optimizes propensity score prediction and covariate balance
     using a GMM-style approach.
-    
+
     Implements the just-identified CBPS estimator from:
     Imai & Ratkovic (2014) 'Covariate Balancing Propensity Score'.
     """
     try:
-        y, X = patsy.dmatrices(formula, data, return_type='dataframe')
+        y, X = patsy.dmatrices(formula, data, return_type="dataframe")
         y_arr = y.iloc[:, 0].values
         X_arr = X.values
     except Exception as e:
@@ -187,7 +207,7 @@ def _estimate_cbps(
         # For treated: weight by 1/ps; for control: weight by 1/(1-ps)
         weights_t = y_arr / ps_clipped
         weights_c = (1 - y_arr) / (1 - ps_clipped)
-        
+
         balance_loss = 0.0
         for j in range(p):
             weighted_mean_t = np.sum(weights_t * X_arr[:, j]) / np.sum(weights_t)
@@ -201,7 +221,10 @@ def _estimate_cbps(
     # Initialize with logistic regression coefficients
     try:
         from sklearn.linear_model import LogisticRegression as LR
-        init_model = LR(random_state=random_state, max_iter=1000, penalty=None, solver='lbfgs')
+
+        init_model = LR(
+            random_state=random_state, max_iter=1000, penalty=None, solver="lbfgs"
+        )
         init_model.fit(X_arr, y_arr)
         beta_init = np.concatenate([init_model.intercept_, init_model.coef_.flatten()])
         # Pad or trim to match X columns (patsy includes intercept)
@@ -214,8 +237,8 @@ def _estimate_cbps(
     result = minimize(
         _cbps_objective,
         beta_init,
-        method='L-BFGS-B',
-        options={'maxiter': 1000, 'ftol': 1e-8}
+        method="L-BFGS-B",
+        options={"maxiter": 1000, "ftol": 1e-8},
     )
 
     beta_hat = result.x
@@ -224,7 +247,7 @@ def _estimate_cbps(
 
     propensity_scores = pd.Series(ps, index=data.index)
 
-    if link in ['logit', 'linear.logit']:
+    if link in ["logit", "linear.logit"]:
         eps = 1e-9
         clipped = np.clip(ps, eps, 1 - eps)
         distance_measure = pd.Series(logit(clipped), index=data.index)
