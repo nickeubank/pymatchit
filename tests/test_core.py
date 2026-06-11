@@ -65,29 +65,29 @@ def test_cem_matching(lalonde_data):
     m.fit('treat ~ age + educ + re74')
     assert len(m.matched_data) > 0
 
-def test_cem_default_uses_sturges_rule(lalonde_data):
-    # CEM should default to Sturges' rule (ceil(log2(n) + 1)) for continuous
-    # covariates, matching R's `cem` package and producing meaningfully more
-    # strata than a fixed 5-bin default.
-    n = len(lalonde_data)
-    sturges = int(np.ceil(np.log2(n) + 1))
+def test_cem_default_uses_sturges_rule():
+    # Synthetic data with a single continuous covariate so the expected
+    # stratum count is exactly known: n=128 gives Sturges' rule
+    # ceil(log2(128) + 1) = 8 bins. x is uniform over [0, 127], so every
+    # equal-width bin is populated, and alternating treatment guarantees
+    # each bin contains both treated and control units. The default must
+    # therefore produce exactly 8 subclasses with no units discarded.
+    n = 128
+    df = pd.DataFrame({
+        'x': np.arange(n, dtype=float),
+        'treat': np.tile([1, 0], n // 2),
+    })
 
-    m_default = MatchIt(lalonde_data, method='cem')
-    m_default.fit('treat ~ age + educ + re74')
+    m_default = MatchIt(df, method='cem')
+    m_default.fit('treat ~ x')
 
-    m_five = MatchIt(lalonde_data, method='cem',
-                     cutpoints={'age': 5, 'educ': 5, 're74': 5})
-    m_five.fit('treat ~ age + educ + re74')
+    assert m_default.matched_data['subclass'].nunique() == 8
+    assert len(m_default.matched_data) == n
 
-    m_sturges = MatchIt(lalonde_data, method='cem',
-                        cutpoints={'age': sturges, 'educ': sturges, 're74': sturges})
-    m_sturges.fit('treat ~ age + educ + re74')
-
-    # Default behavior should match explicit Sturges, not the old 5-bin default
-    assert m_default.matched_data['subclass'].nunique() == \
-        m_sturges.matched_data['subclass'].nunique()
-    assert m_default.matched_data['subclass'].nunique() > \
-        m_five.matched_data['subclass'].nunique()
+    # Explicit cutpoints still override the Sturges default
+    m_five = MatchIt(df, method='cem', cutpoints={'x': 5})
+    m_five.fit('treat ~ x')
+    assert m_five.matched_data['subclass'].nunique() == 5
 
 def test_subclass_matching(lalonde_data):
     m = MatchIt(lalonde_data, method='subclass', subclass=5)
