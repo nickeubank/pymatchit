@@ -104,6 +104,23 @@ def test_antiexact_with_replacement(sim_data):
         )
 
 
+def test_antiexact_combined_with_exact(sim_data):
+    """antiexact must also be enforced inside exact-matching strata."""
+    m = MatchIt(sim_data, method="nearest", exact=["black"], antiexact=["site"], random_state=1)
+    m.fit("treat ~ age + educ")
+    pairs = m.matches()
+    assert len(pairs) > 0
+    for row in pairs.itertuples():
+        assert (
+            sim_data.loc[row.treated_index, "black"]
+            == sim_data.loc[row.control_index, "black"]
+        )
+        assert (
+            sim_data.loc[row.treated_index, "site"]
+            != sim_data.loc[row.control_index, "site"]
+        )
+
+
 def test_antiexact_unsupported_method_raises(sim_data):
     m = MatchIt(sim_data, method="cem", antiexact=["site"])
     with pytest.raises(NotImplementedError, match="antiexact"):
@@ -132,6 +149,27 @@ def test_mahvars_changes_matches(sim_data):
     pairs_ps = m_ps.matches().sort_values("treated_index").reset_index(drop=True)
     pairs_mah = m_mah.matches().sort_values("treated_index").reset_index(drop=True)
     assert not pairs_ps.equals(pairs_mah)
+
+
+def test_mahvars_optimal_changes_matches(sim_data):
+    m_ps = MatchIt(sim_data, method="optimal", random_state=1)
+    m_ps.fit("treat ~ age + educ + black")
+    m_mah = MatchIt(sim_data, method="optimal", mahvars=["age"], random_state=1)
+    m_mah.fit("treat ~ age + educ + black")
+    assert m_mah.propensity_scores is not None
+    pairs_ps = m_ps.matches().sort_values("treated_index").reset_index(drop=True)
+    pairs_mah = m_mah.matches().sort_values("treated_index").reset_index(drop=True)
+    assert not pairs_ps.equals(pairs_mah)
+
+
+def test_mahvars_full_changes_weights(sim_data):
+    m_ps = MatchIt(sim_data, method="full", random_state=1)
+    m_ps.fit("treat ~ age + educ + black")
+    m_mah = MatchIt(sim_data, method="full", mahvars=["age"], random_state=1)
+    m_mah.fit("treat ~ age + educ + black")
+    assert m_mah.propensity_scores is not None
+    assert len(m_mah.matched_data) > 0
+    assert not m_ps.weights.equals(m_mah.weights)
 
 
 def test_mahvars_unsupported_method_raises(sim_data):
@@ -187,6 +225,21 @@ def test_ate_with_pair_matching_raises(sim_data):
             m.fit("treat ~ age + educ")
 
 
+@pytest.mark.parametrize("method", ["optimal", "genetic"])
+def test_atc_other_pair_matchers(sim_data, method):
+    """The ATC focal-group switch must also apply to optimal and genetic matching."""
+    kwargs = {"pop_size": 10, "max_generations": 2} if method == "genetic" else {}
+    m = MatchIt(sim_data, method=method, estimand="ATC", random_state=1, **kwargs)
+    m.fit("treat ~ age + educ + black")
+    assert len(m.matched_indices) > 0
+    for key, vals in m.matched_indices.items():
+        assert sim_data.loc[key, "treat"] == 0
+        for v in vals:
+            assert sim_data.loc[v, "treat"] == 1
+    md = m.matched_data
+    assert (md.loc[md.treat == 0, "weights"] == 1.0).all()
+
+
 # ==========================================
 # User-supplied distance
 # ==========================================
@@ -223,13 +276,13 @@ def test_ratio_weights_account_for_partial_matches(sim_data):
             expected[c] = expected.get(c, 0.0) + 1.0 / k
     for c_idx, w in expected.items():
         assert m.weights.loc[c_idx] == pytest.approx(w)
-    # Treated units with only one in-caliper match exist in this configuration,
-    # and their controls must carry full weight 1
+    # This configuration produces treated units with only one in-caliper match;
+    # their controls must carry full weight 1 (not 1/ratio)
     partial = [t for t, c in m.matched_indices.items() if len(c) == 1]
-    if partial:
-        for t in partial:
-            c = m.matched_indices[t][0]
-            assert m.weights.loc[c] == pytest.approx(1.0)
+    assert len(partial) > 0
+    for t in partial:
+        c = m.matched_indices[t][0]
+        assert m.weights.loc[c] == pytest.approx(1.0)
 
 
 # ==========================================
@@ -247,6 +300,50 @@ def test_caliper_with_exact_uses_global_sd(sim_data):
             - m.distance_measure.loc[row.control_index]
         )
         assert diff <= threshold + 1e-12
+
+
+# ==========================================
+# m_order='random' must not touch the global RNG
+# ==========================================
+def test_m_order_random_does_not_reseed_global_rng(sim_data):
+    np.random.seed(123)
+    m = MatchIt(sim_data, method="nearest", m_order="random", random_state=42)
+    m.fit("treat ~ age + educ")
+    draw_after_match = np.random.rand()
+
+    np.random.seed(123)
+    draw_clean = np.random.rand()
+    assert draw_after_match == draw_clean
+
+
+def test_m_order_random_reproducible(sim_data):
+    results = []
+    for _ in range(2):
+        m = MatchIt(sim_data, method="nearest", m_order="random", random_state=7)
+        m.fit("treat ~ age + educ")
+        results.append(m.matches().sort_values("treated_index").reset_index(drop=True))
+    pd.testing.assert_frame_equal(results[0], results[1])
+
+
+# ==========================================
+# CBPS warm start
+# ==========================================
+def test_cbps_warm_start_used(sim_data, monkeypatch):
+    """beta_init was always discarded (length mismatch) and silently fell back
+    to zeros; the optimizer must now start from logistic-regression coefficients."""
+    import pymatchit.distance as dist_mod
+
+    captured = {}
+    real_minimize = dist_mod.minimize
+
+    def spy(fun, x0, **kw):
+        captured["x0"] = np.asarray(x0).copy()
+        return real_minimize(fun, x0, **kw)
+
+    monkeypatch.setattr(dist_mod, "minimize", spy)
+    ps, _ = dist_mod.estimate_distance(sim_data, "treat ~ age + educ + black", method="cbps")
+    assert captured["x0"].any(), "CBPS started from the all-zeros fallback"
+    assert ((ps > 0) & (ps < 1)).all()
 
 
 # ==========================================
